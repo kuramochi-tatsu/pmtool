@@ -1,0 +1,127 @@
+-- =========================================================
+-- PM Tool DB Schema (PostgreSQL)
+-- =========================================================
+
+-- =========================
+-- Master: Assignees
+-- =========================
+CREATE TABLE IF NOT EXISTS pm_assignees (
+  id          BIGSERIAL PRIMARY KEY,
+  name        VARCHAR(100) NOT NULL,
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order  INT NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =========================
+-- Master: Statuses
+-- =========================
+CREATE TABLE IF NOT EXISTS pm_statuses (
+  id          BIGSERIAL PRIMARY KEY,
+  name        VARCHAR(50) NOT NULL,
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order  INT NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  is_done     BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+-- 既存DB互換（あとから追加しても安全）
+ALTER TABLE pm_statuses
+  ADD COLUMN IF NOT EXISTS is_done BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- =========================
+-- Tickets
+-- =========================
+CREATE TABLE IF NOT EXISTS pm_tickets (
+  id           BIGSERIAL PRIMARY KEY,
+  title        VARCHAR(200) NOT NULL,
+  description  TEXT,
+  assignee_id  BIGINT,
+  due_date     DATE,
+  status_id    BIGINT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT fk_pm_tickets_assignee FOREIGN KEY (assignee_id) REFERENCES pm_assignees(id),
+  CONSTRAINT fk_pm_tickets_status   FOREIGN KEY (status_id)   REFERENCES pm_statuses(id)
+);
+
+-- =========================
+-- Thread: Ticket Comments
+-- =========================
+CREATE TABLE IF NOT EXISTS pm_ticket_comments (
+  id         BIGSERIAL PRIMARY KEY,
+  ticket_id  BIGINT NOT NULL REFERENCES pm_tickets(id) ON DELETE CASCADE,
+  body       TEXT NOT NULL,
+  is_system  BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =========================
+-- Due Label Rules (NEW)
+-- =========================
+CREATE TABLE IF NOT EXISTS pm_due_rules (
+  id           BIGSERIAL PRIMARY KEY,
+  days_from    INT NOT NULL,  -- 残り日数（下限・含む）
+  days_to      INT NOT NULL,  -- 残り日数（上限・含む）
+  label        VARCHAR(50) NOT NULL, -- 表示名（例：期限間近）
+  bg_color     VARCHAR(20) NOT NULL DEFAULT '#EEF2FF',
+  text_color   VARCHAR(20) NOT NULL DEFAULT '#1E3A8A',
+  border_color VARCHAR(20) NOT NULL DEFAULT '#93C5FD',
+  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order   INT NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ck_pm_due_rules_range CHECK (days_from >= 0 AND days_to >= days_from)
+);
+
+-- =========================
+-- Indexes
+-- =========================
+CREATE INDEX IF NOT EXISTS ix_pm_tickets_due_date  ON pm_tickets(due_date);
+CREATE INDEX IF NOT EXISTS ix_pm_tickets_assignee  ON pm_tickets(assignee_id);
+CREATE INDEX IF NOT EXISTS ix_pm_tickets_status    ON pm_tickets(status_id);
+CREATE INDEX IF NOT EXISTS ix_pm_tickets_updated   ON pm_tickets(updated_at);
+
+CREATE INDEX IF NOT EXISTS ix_pm_ticket_comments_ticket_created
+  ON pm_ticket_comments(ticket_id, created_at);
+
+CREATE INDEX IF NOT EXISTS ix_pm_due_rules_active_sort
+  ON pm_due_rules(is_active, sort_order, id);
+
+-- =========================
+-- Optional seed data (safe-ish)
+-- ※ON CONFLICT を確実に効かせるなら UNIQUE が必要なので、
+--   ここでは「初回向けの例」として載せています。
+-- =========================
+
+-- 状態（例）
+INSERT INTO pm_statuses(name, sort_order, is_active, is_done)
+SELECT v.name, v.sort_order, TRUE, v.is_done
+FROM (VALUES
+  ('未着手', 10, FALSE),
+  ('進行中', 20, FALSE),
+  ('レビュー', 30, FALSE),
+  ('完了',   40, TRUE)
+) AS v(name, sort_order, is_done)
+WHERE NOT EXISTS (SELECT 1 FROM pm_statuses);
+
+-- 担当者（例）
+INSERT INTO pm_assignees(name, sort_order, is_active)
+SELECT v.name, v.sort_order, TRUE
+FROM (VALUES
+  ('未割当', 0)
+) AS v(name, sort_order)
+WHERE NOT EXISTS (SELECT 1 FROM pm_assignees);
+
+-- 期限ルール（例）
+INSERT INTO pm_due_rules(days_from, days_to, label, bg_color, text_color, border_color, is_active, sort_order)
+SELECT v.days_from, v.days_to, v.label, v.bg, v.fg, v.bd, TRUE, v.sort_order
+FROM (VALUES
+  (0, 0, '今日が期限', '#FEF2F2', '#991B1B', '#FCA5A5', 10),
+  (1, 2, '期限間近', '#FFF7ED', '#9A3412', '#FDBA74', 20),
+  (3, 7, '要注意',   '#FFFBEB', '#92400E', '#FCD34D', 30),
+  (8, 9999, '余裕',  '#ECFDF5', '#065F46', '#6EE7B7', 40)
+) AS v(days_from, days_to, label, bg, fg, bd, sort_order)
+WHERE NOT EXISTS (SELECT 1 FROM pm_due_rules);
